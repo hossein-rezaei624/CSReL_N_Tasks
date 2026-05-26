@@ -1,6 +1,6 @@
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-local_path='./results/split_cifar100/test309'  # set your output path
+local_path='./results/split_cifar100/test001'  # set your output path
 dataset='splitcifar100'
 setting='der'
 data_path=''
