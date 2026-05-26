@@ -338,8 +338,8 @@ class SplitCifar100(object):
             return train_ind, full_train_id, test_ind
 
     def make_task_dic(self):
-        tasks = 50
-        cls_per_task = 2
+        tasks = 20
+        cls_per_task = 5
         cur_class = 0
         for i in range(tasks):
             self.task_dic[i] = []
