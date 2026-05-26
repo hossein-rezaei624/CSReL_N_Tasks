@@ -1,5 +1,8 @@
 # -*-coding:utf8-*-
 
+from corruptions import *
+from torchvision.transforms import ToPILImage, PILToTensor
+## for run_cifar100_prv OOD
 import copy
 import torch
 import os
@@ -87,7 +90,9 @@ class ContinualRunner(object):
         self.to_pil = torchvision.transforms.ToPILImage()
         self.seen_tasks = 0
         self.results = []
+        self.results_augmented = []
         self.results_task_hossein = []
+        self.results_task_hossein_augmented = []
         self.mask_results = []
         self.task_cnts = []
 
@@ -187,39 +192,52 @@ class ContinualRunner(object):
                 step += 1
             ##print('finish training epoch:', i)
             if do_evaluation and i % 10 == 0:
-                accs, losses, accs_task_hossein = self.evaluate_model(dataset_name_hossein, eval_loaders=eval_loaders, on_cuda=self.use_cuda)
+                accs, losses, accs_task_hossein, accs_augmented, losses_augmented, accs_task_hossein_augmented = self.evaluate_model(dataset_name_hossein, eval_loaders=eval_loaders, on_cuda=self.use_cuda)
                 ##print('\taccuracy on test is:', np.mean(accs), accs, losses)
                 ##if len(accs) > 1:
                 ##    print('\tprevious tasks accuracy is:', np.mean(accs[:-1]))
-        if self.train_params['use_cuda']:
-            self.model.cpu()
+        ##if self.train_params['use_cuda']:
+        ##    self.model.cpu()
         del alpha
-        accs, losses, accs_task_hossein = self.evaluate_model(dataset_name_hossein, eval_loaders=eval_loaders, on_cuda=False)
+        accs, losses, accs_task_hossein, accs_augmented, losses_augmented, accs_task_hossein_augmented = self.evaluate_model(dataset_name_hossein, eval_loaders=eval_loaders, on_cuda=self.use_cuda)
         ##print('\tlosses on testset is:', losses)
         self.results.append(accs)
+        self.results_augmented.append(accs_augmented)
         self.results_task_hossein.append(accs_task_hossein)
-        print("\nTask", self.seen_tasks + 1, ":  Class ACC:", np.mean(accs), "     Task ACC:", np.mean(accs_task_hossein), "\n")
-        if self.seen_tasks > 48:
-            print("Class BWT:", backward_transfer(self.results), "     Task BWT:", backward_transfer(self.results_task_hossein), "\n")
-            print("fullclasss", self.results, "\n")
-            print("fulltask", self.results_task_hossein)
+        self.results_task_hossein_augmented.append(accs_task_hossein_augmented)
+        print("\nTask", self.seen_tasks + 1, ":  Class ACC (i.i.d.):", np.mean(accs), "              Task ACC (i.i.d.):", np.mean(accs_task_hossein), "\n")
+        print("          Class ACC (OOD):", np.mean(accs_augmented), "         Task ACC (OOD):", np.mean(accs_task_hossein_augmented), "\n")
+        if self.seen_tasks > 8:
+            print("Class (i.i.d.) BWT:", backward_transfer(self.results), "              Task (i.i.d.) BWT:", backward_transfer(self.results_task_hossein), "\n")
+            print("Class (OOD) BWT:", backward_transfer(self.results_augmented), "       Task (OOD) BWT:", backward_transfer(self.results_task_hossein_augmented), "\n")
+            print("fullclasss (i.i.d.)", self.results, "\n")
+            print("fullclasss (OOD)", self.results_augmented, "\n")
+            print("fulltask (i.i.d.)", self.results_task_hossein)
+            print("fulltask (OOD)", self.results_task_hossein_augmented)
         return accs
 
     def evaluate_model(self, dataset_name_hossein, eval_loaders, on_cuda=False):
         status = self.model.training
         self.model.eval()
         accs = []
+        accs_augmented = []
         accs_task_hossein = []
+        accs_task_hossein_augmented = []
         eval_loss_fn = torch.nn.CrossEntropyLoss(reduction='sum')
         losses = []
+        losses_augmented = []
         with torch.no_grad():
             for i in range(self.seen_tasks + 1):
                 loss = 0
+                loss_augmented = 0
                 correct = 0
+                correct_augmented = 0
                 correct_task_hossein = 0
+                correct_task_hossein_augmented = 0
                 for data, target in eval_loaders[i]:
                     if on_cuda:
                         data, target = data.cuda(), target.cuda()
+                    
                     output = self.model(data)
                     loss += eval_loss_fn(output, target).cpu().item()
                     pred = output.argmax(dim=1, keepdim=True)
@@ -228,15 +246,81 @@ class ContinualRunner(object):
                     mask_classes(dataset_name_hossein, output, i)
                     pred_task_hossein = output.argmax(dim=1, keepdim=True)
                     correct_task_hossein += pred_task_hossein.eq(target.view_as(pred_task_hossein)).sum().item()
+
+                    
+                    batch_x = data
+                    batch_y = target
+    
+                    ###batch_x = batch_x.expand(-1, 3, -1, -1) #should be uncomment for mnist
+                    
+                    # List to hold all the batches with distortions applied
+                    all_batches = []
+                    
+                    # Convert the batch of images to a list of PIL images
+                    to_pil = ToPILImage()
+                    batch_x_pil_list = [to_pil(img.cpu()) for img in batch_x]  
+                    
+                    distortions = [
+                        gaussian_noise, shot_noise, impulse_noise, defocus_blur, motion_blur,
+                        zoom_blur, fog, snow, elastic_transform, pixelate, jpeg_compression
+                    ]
+            
+                    # Process each image in the batch
+                    for batch_idx, batch_x_pil in enumerate(batch_x_pil_list):
+                        # List to hold the original and distorted images for the current batch image
+                        augmented_images = []
+                        
+                        # Add the original image to the list
+                        augmented_images.append(batch_x[batch_idx])
+    
+                        # Loop through the distortions and apply them to the current image
+                        for function in distortions:
+                            if function in [pixelate, jpeg_compression]:
+                                # For functions returning tensors
+                                img_processed = PILToTensor()(function(batch_x_pil)).to(dtype=batch_x.dtype).to("cuda") / 255.0
+                            else:
+                                # For functions returning images
+                                img_processed = torch.tensor(function(batch_x_pil).astype(float) / 255.0, dtype=batch_x.dtype).to("cuda").permute(2, 0, 1)
+            
+                            # Append the distorted image
+                            augmented_images.append(img_processed)
+            
+                        # Concatenate the original and distorted images
+                        augmented_images_concatenated = torch.stack(augmented_images, dim=0)
+                        all_batches.append(augmented_images_concatenated)
+            
+                    # Concatenate all the augmented batches along the batch dimension
+                    batch_x_augmented = torch.cat(all_batches, dim=0)
+    
+                    ###batch_x_augmented = batch_x_augmented.mean(dim=1, keepdim=True)  #should be uncomment for mnist
+                    
+                    # Repeat each label for the number of augmentations plus the original image
+                    batch_y_augmented = batch_y.repeat_interleave(len(distortions) + 1)
+                    
+
+                    output_augmented = self.model(batch_x_augmented)
+                    loss_augmented += eval_loss_fn(output_augmented, batch_y_augmented).cpu().item()
+                    pred_augmented = output_augmented.argmax(dim=1, keepdim=True)
+                    correct_augmented += pred_augmented.eq(batch_y_augmented.view_as(pred_augmented)).sum().item()
+
+                    mask_classes(dataset_name_hossein, output_augmented, i)
+                    pred_task_hossein_augmented = output_augmented.argmax(dim=1, keepdim=True)
+                    correct_task_hossein_augmented += pred_task_hossein_augmented.eq(batch_y_augmented.view_as(pred_task_hossein_augmented)).sum().item()
                 
                 avg_acc = 100. * correct / len(eval_loaders[i].dataset)
+                avg_acc_augmented = 100. * correct_augmented / (len(eval_loaders[i].dataset) * (len(distortions) + 1))
                 avg_acc_task_hossein = 100. * correct_task_hossein / len(eval_loaders[i].dataset)
+                avg_acc_task_hossein_augmented = 100. * correct_task_hossein_augmented / (len(eval_loaders[i].dataset) * (len(distortions) + 1))
                 avg_loss = loss / len(eval_loaders[i].dataset)
+                avg_loss_augmented = loss_augmented / (len(eval_loaders[i].dataset) * (len(distortions) + 1))
                 accs.append(avg_acc)
+                accs_augmented.append(avg_acc_augmented)
                 accs_task_hossein.append(avg_acc_task_hossein)
+                accs_task_hossein_augmented.append(avg_acc_task_hossein_augmented)
                 losses.append(avg_loss)
+                losses_augmented.append(avg_loss_augmented)
         self.model.train(status)
-        return accs, losses, accs_task_hossein
+        return accs, losses, accs_task_hossein, accs_augmented, losses_augmented, accs_task_hossein_augmented
 
     def update_buffer(self, full_train_loader, sub_loader, next_loader=None):
         # make current x and y
