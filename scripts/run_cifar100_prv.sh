@@ -1,6 +1,6 @@
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-local_path='./results/split_cifar100/test5'  # set your output path
+local_path='./results/split_cifar100/test309'  # set your output path
 dataset='splitcifar100'
 setting='der'
 data_path=''
@@ -18,7 +18,7 @@ slt_wo_aug=0
 holdout_set='sub'
 replay_mode='sub'
 use_bn=1
-limit_per_task=5000
+limit_per_task=1000
 runner_type='coreset'
 update_mode='coreset'
 extra_data=''
